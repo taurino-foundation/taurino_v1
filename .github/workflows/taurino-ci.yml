@@ -1,0 +1,212 @@
+
+name: Taurino CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  validate:
+    name: Validate repository and regenerate lockfiles
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Check project metadata and synchronized version
+        run: python .github/scripts/validate_metadata.py
+
+      - name: Remove existing lockfiles
+        shell: bash
+        run: |
+          for file in Cargo.lock uv.lock; do
+            if [ -f "$file" ]; then
+              echo "Removing existing $file"
+              rm -f "$file"
+            else
+              echo "$file does not exist."
+            fi
+          done
+
+      - name: Generate fresh Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: Generate fresh uv.lock
+        run: uv lock
+
+      - name: Verify generated lockfiles
+        shell: bash
+        run: |
+          test -s Cargo.lock
+          test -s uv.lock
+
+          cargo metadata --locked --format-version 1 --no-deps > /dev/null
+          uv lock --check
+
+      - name: Upload regenerated lockfiles
+        uses: actions/upload-artifact@v4
+        with:
+          name: taurino-ci-lockfiles
+          path: |
+            Cargo.lock
+            uv.lock
+          if-no-files-found: error
+          retention-days: 7
+
+  rust:
+    name: Rust / ${{ matrix.os }}
+    needs: validate
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download generated lockfiles
+        uses: actions/download-artifact@v4
+        with:
+          name: taurino-ci-lockfiles
+          path: .
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux WebView build requirements
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config
+
+      - name: Cargo format
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Cargo Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Cargo tests
+        run: cargo test --workspace --locked
+
+  python:
+    name: Python / ${{ matrix.os }} / ${{ matrix.python }}
+    needs: validate
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+        python: ["3.9", "3.11", "3.14"]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download generated lockfiles
+        uses: actions/download-artifact@v4
+        with:
+          name: taurino-ci-lockfiles
+          path: .
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config
+
+      - name: Install environment from regenerated lockfiles
+        run: uv sync --locked --python ${{ matrix.python }} --all-extras
+
+      - name: Python tests
+        shell: bash
+        run: |
+          if [ -d python/tests ] || [ -d tests ]; then
+            uv run --no-sync --python ${{ matrix.python }} python -m pytest
+          else
+            echo "No Python tests directory found."
+          fi
+
+  wheels:
+    name: Build wheels / ${{ matrix.os }}
+    needs: [validate, rust, python]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download generated lockfiles
+        uses: actions/download-artifact@v4
+        with:
+          name: taurino-ci-lockfiles
+          path: .
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config
+
+      - name: Build ABI3 wheel
+        run: uv run --no-project --with maturin maturin build --release --locked --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-wheel-${{ matrix.os }}
+          path: dist/*.whl
+          if-no-files-found: error

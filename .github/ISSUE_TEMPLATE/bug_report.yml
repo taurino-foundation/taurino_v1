@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible Taurino issue
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Taurino version
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Operating system
+      options: [Windows, Linux, macOS]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps and logs
+    validations:
+      required: true

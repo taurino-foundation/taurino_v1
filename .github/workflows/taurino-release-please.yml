@@ -1,0 +1,19 @@
+name: Taurino Release PR
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  release-pr:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          # Optional: use a GitHub App/PAT so generated events trigger normal CI.
+          # If set, replace github.token; do not interpolate an undefined secret in an expression.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

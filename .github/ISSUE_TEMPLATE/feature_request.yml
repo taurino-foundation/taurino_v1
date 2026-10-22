@@ -1,0 +1,14 @@
+name: Feature request
+description: Suggest a new API or native desktop capability
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case and proposed behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Affected platforms
+      options: [Cross-platform, Windows, Linux, macOS]

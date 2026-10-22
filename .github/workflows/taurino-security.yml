@@ -1,0 +1,132 @@
+
+name: Taurino Security
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  audit:
+    name: Rust and Python Security Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+
+      # -------------------------------------------------------
+      # 01 - Validate repository metadata
+      # -------------------------------------------------------
+
+      - name: Validate project metadata
+        run: python .github/scripts/validate_metadata.py
+
+      # -------------------------------------------------------
+      # 02 - Remove existing lockfiles
+      # -------------------------------------------------------
+
+      - name: Check and remove existing lockfiles
+        shell: bash
+        run: |
+          for file in Cargo.lock uv.lock; do
+            if [ -f "$file" ]; then
+              echo "Existing $file detected. Removing..."
+              rm -f "$file"
+            else
+              echo "$file not found. Creating a new one..."
+            fi
+          done
+
+      # -------------------------------------------------------
+      # 03 - Regenerate Cargo.lock and uv.lock
+      # -------------------------------------------------------
+
+      - name: Generate fresh Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: Generate fresh uv.lock
+        run: uv lock
+
+      # -------------------------------------------------------
+      # 04 - Verify generated lockfiles
+      # -------------------------------------------------------
+
+      - name: Verify lockfiles
+        shell: bash
+        run: |
+          test -s Cargo.lock
+          test -s uv.lock
+
+          cargo metadata --locked --format-version 1 --no-deps > /dev/null
+          uv lock --check
+
+          echo "Both lockfiles generated successfully."
+
+      # -------------------------------------------------------
+      # 05 - Rust security audit
+      # -------------------------------------------------------
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Rust dependency audit
+        run: cargo audit --file Cargo.lock
+
+      # -------------------------------------------------------
+      # 06 - Python security audit
+      # -------------------------------------------------------
+
+      - name: Export Python dependencies
+        run: |
+          uv export \
+            --locked \
+            --no-emit-project \
+            --no-hashes \
+            --output-file requirements-audit.txt
+
+      - name: Python dependency audit
+        run: uvx pip-audit -r requirements-audit.txt
+
+      # -------------------------------------------------------
+      # 07 - Upload security inputs
+      # -------------------------------------------------------
+
+      - name: Upload security lockfiles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taurino-security-lockfiles
+          path: |
+            Cargo.lock
+            uv.lock
+            requirements-audit.txt
+          if-no-files-found: warn
+          retention-days: 14
